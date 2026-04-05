@@ -303,7 +303,9 @@ window.DashcamMP4 = DashcamMP4;
         }
         if (typeof value === 'number') {
             // 속도 필드를 m/s에서 km/h로 변환 (1 m/s = 3.6 km/h)
-            if (propName === 'vehicle_speed_mps') {
+            // propName을 snake_case로 변환해서 비교
+            const snakeName = propName?.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+            if (snakeName === 'vehicle_speed_mps') {
                 const kmh = value * 3.6;
                 return kmh.toFixed(1);
             }
