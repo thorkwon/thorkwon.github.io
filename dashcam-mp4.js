@@ -249,34 +249,66 @@ window.DashcamMP4 = DashcamMP4;
 
     /** Derive field metadata from SeiMetadata type */
     function deriveFieldInfo(SeiMetadataCtor, enumMap, options = {}) {
+        // 한글 라벨 매핑
+        const koreanLabels = {
+            version: '버전',
+            gear_state: '기어 상태',
+            frame_seq_no: '프레임 번호',
+            vehicle_speed_mps: '속도 (km/h)',
+            accelerator_pedal_position: '가속 페달',
+            steering_wheel_angle: '스티어링 각도 (°)',
+            blinker_on_left: '좌측 방향지시등',
+            blinker_on_right: '우측 방향지시등',
+            brake_applied: '브레이크',
+            autopilot_state: '오토파일럿 상태',
+            latitude_deg: '위도 (°)',
+            longitude_deg: '경도 (°)',
+            heading_deg: '방향 (°)',
+            linear_acceleration_mps2_x: 'X축 가속도 (m/s²)',
+            linear_acceleration_mps2_y: 'Y축 가속도 (m/s²)',
+            linear_acceleration_mps2_z: 'Z축 가속도 (m/s²)'
+        };
+
         return SeiMetadataCtor.fieldsArray.map(field => {
             const propName = field.name;
             const snakeName = propName.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
-            const label = propName
-                .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-                .replace(/^./, s => s.toUpperCase())
-                .replace(/Mps$/, '(m/s)')
-                .replace(/Deg$/, '(°)');
+            const label = options.useLabels
+                ? (koreanLabels[snakeName] || propName)
+                : propName
+                    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+                    .replace(/^./, s => s.toUpperCase())
+                    .replace(/Mps$/, '(m/s)')
+                    .replace(/Deg$/, '(°)');
 
             return {
                 propName,
                 protoName: options.useSnakeCase ? snakeName : propName,
-                label: options.useLabels ? label : undefined,
+                label: label,
                 enumMap: enumMap[propName] || enumMap[snakeName] || null
             };
         });
     }
 
     /** Format a value for display */
-    function formatValue(value, enumType) {
+    function formatValue(value, enumType, propName) {
         if (enumType) {
             const name = enumType.valuesById?.[value];
             if (name) return name;
             const entry = Object.entries(enumType).find(([, v]) => v === value);
             if (entry) return entry[0];
         }
-        if (typeof value === 'boolean') return value ? 'true' : 'false';
-        if (typeof value === 'number') return Number.isInteger(value) ? value : value.toFixed(2);
+        if (typeof value === 'boolean') {
+            // 한글로 boolean 값 표시
+            return value ? '켜짐' : '꺼짐';
+        }
+        if (typeof value === 'number') {
+            // 속도 필드를 m/s에서 km/h로 변환 (1 m/s = 3.6 km/h)
+            if (propName === 'vehicle_speed_mps') {
+                const kmh = value * 3.6;
+                return kmh.toFixed(1);
+            }
+            return Number.isInteger(value) ? value : value.toFixed(2);
+        }
         if (typeof value === 'object' && value?.toString) return value.toString();
         return value;
     }

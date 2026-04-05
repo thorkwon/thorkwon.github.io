@@ -626,7 +626,7 @@
                 const value = sei?.[propName];
                 const item = document.createElement('div');
                 item.className = 'item';
-                const displayValue = value != null ? DashcamHelpers.formatValue(value, enumMap) : '—';
+                const displayValue = value != null ? DashcamHelpers.formatValue(value, enumMap, propName) : '—';
                 item.innerHTML = `<span class="label">${label}</span><span class="value">${displayValue}</span>`;
                 metaList.appendChild(item);
             }
