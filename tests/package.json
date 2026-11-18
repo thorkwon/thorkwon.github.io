@@ -1,0 +1,14 @@
+{
+  "name": "dashcam-viewer-tests",
+  "private": true,
+  "scripts": {
+    "test": "node --test *.test.cjs",
+    "test:browser": "node browser-smoke.cjs"
+  },
+  "devDependencies": {
+    "puppeteer-core": "25.17.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

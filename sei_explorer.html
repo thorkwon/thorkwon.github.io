@@ -76,11 +76,6 @@
             margin-bottom: 0.125rem;
         }
 
-        .header .subtitle {
-            color: var(--text-muted);
-            font-size: 0.85rem;
-        }
-
         /* Main content - fills remaining space */
         .main {
             flex: 1;
@@ -102,7 +97,7 @@
 
         /* Right: Metadata + Export */
         .meta-section {
-            width: 285px;
+            width: 155px;
             flex-shrink: 0;
             display: flex;
             flex-direction: column;
@@ -250,7 +245,7 @@
         /* ===== STATS OVERLAY ===== */
         .stats-overlay {
             position: absolute;
-            top: 32px;
+            top: 5px;
             left: 50%;
             transform: translateX(-50%);
             display: none;
@@ -379,7 +374,7 @@
 
         @media (max-width: 600px) {
             .stats-overlay {
-                top: 8px;
+                top: 5px;
                 grid-template-columns: 20px 20px 1fr 20px 20px;
                 grid-template-rows: 20px 20px;
                 gap: 4px;
@@ -433,6 +428,12 @@
         .meta-header .framenum {
             font-size: 0.7rem;
             color: var(--text-muted);
+        }
+
+        .meta-header .framenum, .meta-header .recording-time {
+            border-top: 1px solid var(--border);
+            margin-top: 0.4rem;
+            padding-top: 0.4rem;
         }
 
         .meta-list {
@@ -525,15 +526,13 @@
             }
         }
     </style>
+    <link rel="stylesheet" href="viewer.css">
 </head>
 
 <body>
     <div class="app">
         <header class="header">
             <h1>Tesla Dashcam SEI Explorer</h1>
-            <p class="subtitle">View dashcam footage with embedded SEI metadata. All processing happens locally in your
-                browser—no video/SEI data is uploaded. (<a
-                    href="https://github.com/teslamotors/dashcam/blob/master/sei_explorer.html">view source</a>)</p>
         </header>
 
         <main class="main">
@@ -541,6 +540,7 @@
                 <div class="video-wrap">
                     <div class="drop-overlay" id="dropOverlay">
                         <input type="file" id="fileInput" accept="video/mp4" multiple>
+                        <input type="file" id="folderInput" webkitdirectory multiple>
                         <p>Drop MP4 here or click to select</p>
                     </div>
                     <canvas id="canvas"></canvas>
@@ -626,6 +626,7 @@
                     <div class="meta-header">
                         <div class="filename" id="fileName">No file loaded</div>
                         <div class="framenum" id="frameNum">Frame 0/0</div>
+                        <div class="recording-time" id="recordingTime">시간 정보 없음</div>
                     </div>
                     <div class="meta-list" id="metaList"></div>
                 </div>
@@ -637,299 +638,10 @@
     <script src="vendor/protobuf.min.js"></script>
     <script src="vendor/jszip.min.js"></script>
     <script src="dashcam-mp4.js"></script>
-    <script>
-        // State
-        let seiType = null, seiFields = null, seiFieldsCsv = null;
-        let mp4 = null, frames = null, firstKeyframe = 0;
-        let currentFileName = null;
-        let decoder = null, decoding = false, pendingFrame = null;
-        let playing = false, playTimer = null;
-
-        // DOM
-        const $ = id => document.getElementById(id);
-        const dropOverlay = $('dropOverlay'), fileInput = $('fileInput');
-        const canvas = $('canvas'), ctx = canvas.getContext('2d');
-        const slider = $('slider'), playBtn = $('playBtn'), exportBtn = $('exportBtn');
-        const frameNum = $('frameNum'), fileName = $('fileName'), metaList = $('metaList');
-        const statsOverlay = $('statsOverlay'), gearText = $('gearText'), speedVal = $('speedVal');
-        const steeringSvg = $('steeringSvg'), accelFill = $('accelFill'), autopilot = $('autopilot');
-        const blinkerL = statsOverlay.querySelector('.blinker-l'), blinkerR = statsOverlay.querySelector('.blinker-r');
-        const brakeEl = statsOverlay.querySelector('.brake');
-        let blinkerTimer = null, blinkerState = false, blinkerLeft = false, blinkerRight = false;
-        let useMph = false, lastSpeedMps = 0;
-        const speedUnit = statsOverlay.querySelector('.speed-unit');
-        statsOverlay.querySelector('.speed-click').onclick = () => {
-            useMph = !useMph;
-            speedUnit.textContent = useMph ? 'mph' : 'km/h';
-            speedVal.textContent = Math.round(lastSpeedMps * (useMph ? 2.237 : 3.6));
-        };
-
-        // Events
-        dropOverlay.onclick = () => fileInput.click();
-        fileInput.onchange = e => { handleFiles(e.target.files); e.target.value = ''; };
-        document.ondragover = e => { e.preventDefault(); dropOverlay.classList.add('dragover'); };
-        document.ondragleave = e => { if (!e.relatedTarget) dropOverlay.classList.remove('dragover'); };
-        document.ondrop = async e => {
-            e.preventDefault();
-            dropOverlay.classList.remove('dragover');
-            const items = e.dataTransfer?.items;
-            if (items) {
-                const { files, directoryName } = await DashcamHelpers.getFilesFromDataTransfer(items);
-                handleFiles(files, directoryName);
-            } else {
-                handleFiles(e.dataTransfer?.files ?? []);
-            }
-        };
-        slider.oninput = () => { pause(); showFrame(+slider.value); };
-        playBtn.onclick = () => playing ? pause() : play();
-        document.onkeydown = e => {
-            if (!frames) return;
-            if (e.key === ' ') {
-                e.preventDefault(); playing ? pause() : play();
-            } else if (e.key === 'ArrowLeft' && +slider.value > 0) {
-                e.preventDefault(); pause(); slider.value = +slider.value - 1; showFrame(+slider.value);
-            } else if (e.key === 'ArrowRight' && +slider.value < frames.length - 1) {
-                e.preventDefault(); pause(); slider.value = +slider.value + 1; showFrame(+slider.value);
-            }
-        };
-        exportBtn.onclick = exportCsv;
-
-        // Initialize protobuf
-        DashcamHelpers.initProtobuf().then(({ SeiMetadata, enumFields }) => {
-            seiType = SeiMetadata;
-            seiFields = DashcamHelpers.deriveFieldInfo(SeiMetadata, enumFields, { useLabels: true });
-            seiFieldsCsv = DashcamHelpers.deriveFieldInfo(SeiMetadata, enumFields, { useSnakeCase: true });
-        }).catch(err => console.error('Protobuf init failed:', err));
-
-        async function handleFiles(fileList, directoryName = null) {
-            if (!seiType) await DashcamHelpers.initProtobuf().then(({ SeiMetadata, enumFields }) => {
-                seiType = SeiMetadata;
-                seiFields = DashcamHelpers.deriveFieldInfo(SeiMetadata, enumFields, { useLabels: true });
-                seiFieldsCsv = DashcamHelpers.deriveFieldInfo(SeiMetadata, enumFields, { useSnakeCase: true });
-            });
-
-            const files = (Array.isArray(fileList) ? fileList : Array.from(fileList))
-                .filter(f => f.name.toLowerCase().endsWith('.mp4'));
-            if (!files.length) { alert('Please choose at least one MP4 file.'); return; }
-
-            // Single file: load and display video
-            if (files.length === 1) { loadFile(files[0]); return; }
-
-            // Multiple files: extract metadata and create zip
-            const zip = new JSZip();
-            let exported = 0;
-            for (const file of files) {
-                try {
-                    const mp4 = new DashcamMP4(await file.arrayBuffer());
-                    const messages = mp4.extractSeiMessages(seiType);
-                    if (messages.length) {
-                        zip.file(file.name.replace(/\.mp4$/i, '_sei.csv'), DashcamHelpers.buildCsv(messages, seiFieldsCsv));
-                        exported++;
-                    }
-                } catch { }
-            }
-            if (!exported) { alert('No files produced SEI metadata.'); return; }
-            DashcamHelpers.downloadBlob(await zip.generateAsync({ type: 'blob' }), directoryName ? `${directoryName}_sei.zip` : 'dashcam_sei_metadata.zip');
-            alert(`Exported ${exported} CSV${exported > 1 ? 's' : ''} as ZIP. To view a clip, select a single file.`);
-        }
-
-        async function loadFile(file) {
-            if (!file) return;
-            if (!file.name.toLowerCase().endsWith('.mp4')) {
-                alert('Please select an MP4 file');
-                return;
-            }
-            if (!seiType) { alert('Protobuf not initialized'); return; }
-
-            pause();
-            if (decoder) { try { decoder.close(); } catch { } decoder = null; }
-            metaList.innerHTML = '';
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-            try {
-                mp4 = new DashcamMP4(await file.arrayBuffer());
-                frames = mp4.parseFrames(seiType);
-                firstKeyframe = frames.findIndex(f => f.keyframe);
-                if (firstKeyframe === -1) throw new Error('No keyframes found');
-
-                const config = mp4.getConfig();
-                canvas.width = config.width;
-                canvas.height = config.height;
-                slider.max = frames.length - 1;
-                slider.value = firstKeyframe;
-                dropOverlay.classList.add('hidden');
-                currentFileName = file.name;
-                fileName.textContent = file.name;
-                exportBtn.disabled = false;
-                playBtn.disabled = false;
-                slider.disabled = false;
-                showFrame(firstKeyframe);
-            } catch (err) {
-                mp4 = null;
-                frames = null;
-                firstKeyframe = 0;
-                currentFileName = null;
-                slider.max = 0;
-                slider.value = 0;
-                frameNum.textContent = 'Frame 0/0';
-                fileName.textContent = 'No file loaded';
-                exportBtn.disabled = true;
-                playBtn.disabled = true;
-                slider.disabled = true;
-                dropOverlay.classList.remove('hidden');
-                statsOverlay.classList.remove('visible');
-                alert(err.message);
-            }
-        }
-
-        function play() {
-            if (!frames || playing) return;
-            playing = true;
-            playBtn.innerHTML = '<svg viewBox="0 0 24 24"><rect x="5" y="4" width="4" height="16"/><rect x="15" y="4" width="4" height="16"/></svg>';
-            playNext();
-        }
-
-        function pause() {
-            playing = false;
-            playBtn.innerHTML = '<svg viewBox="0 0 24 24"><polygon points="6,4 20,12 6,20"/></svg>';
-            if (playTimer) { clearTimeout(playTimer); playTimer = null; }
-        }
-
-        function playNext() {
-            if (!playing) return;
-            let next = +slider.value + 1;
-            if (next >= frames.length) next = firstKeyframe;
-            slider.value = next;
-            showFrame(next);
-            playTimer = setTimeout(playNext, mp4.getConfig().durations[next] || 33);
-        }
-
-        function showFrame(index) {
-            frameNum.textContent = `Frame ${index + 1}/${frames.length}`;
-            renderSei(frames[index].sei);
-            if (decoding) { pendingFrame = index; return; }
-            decodeFrame(index);
-        }
-
-        async function decodeFrame(index) {
-            /* Naive decoding strategy: start from the preceding keyframe and decode up to the target frame.
-                This is not optimal in all cases since it re-decodes frames that have already been decoded. */
-            decoding = true;
-            try {
-                let keyIdx = index;
-                while (keyIdx >= 0 && !frames[keyIdx].keyframe) keyIdx--;
-                if (keyIdx < 0) { showError('No preceding keyframe'); return; }
-
-                if (decoder) try { decoder.close(); } catch { }
-                let count = 0;
-                const target = index - keyIdx + 1;
-
-                const decodePromise = new Promise((resolve, reject) => {
-                    decoder = new VideoDecoder({
-                        output: frame => {
-                            if (++count === target) ctx.drawImage(frame, 0, 0);
-                            frame.close();
-                            if (count >= target) resolve();
-                        },
-                        error: reject
-                    });
-
-                    const config = mp4.getConfig();
-                    decoder.configure({ codec: config.codec, width: config.width, height: config.height });
-                    for (let i = keyIdx; i <= index; i++) decoder.decode(createChunk(frames[i]));
-                    decoder.flush().catch(reject);
-                });
-                await decodePromise;
-            } catch (err) {
-                if (!err.message?.includes('Aborted')) showError('Decode failed');
-            } finally {
-                decoding = false;
-                if (pendingFrame !== null) { const n = pendingFrame; pendingFrame = null; decodeFrame(n); }
-            }
-        }
-
-        function createChunk(frame) {
-            const sc = new Uint8Array([0, 0, 0, 1]);
-            const config = mp4.getConfig();
-            const data = frame.keyframe
-                ? DashcamMP4.concat(sc, frame.sps || config.sps, sc, frame.pps || config.pps, sc, frame.data)
-                : DashcamMP4.concat(sc, frame.data);
-            return new EncodedVideoChunk({ type: frame.keyframe ? 'key' : 'delta', timestamp: frame.index * 33333, data });
-        }
-
-        function renderSei(sei) {
-            metaList.innerHTML = '';
-            for (const { propName, label, enumMap } of seiFields) {
-                const value = sei?.[propName];
-                const item = document.createElement('div');
-                item.className = 'item';
-                const displayValue = value != null ? DashcamHelpers.formatValue(value, enumMap) : '—';
-                item.innerHTML = `<span class="label">${label}</span><span class="value">${displayValue}</span>`;
-                metaList.appendChild(item);
-            }
-            updateStats(sei);
-        }
-
-        function updateStats(sei) {
-            if (!sei) { statsOverlay.classList.remove('visible'); return; }
-            statsOverlay.classList.add('visible');
-
-            const gearMap = { 0: 'P', 1: 'D', 2: 'R', 3: 'N' };
-            gearText.textContent = gearMap[sei.gearState] || 'P';
-
-            lastSpeedMps = sei.vehicleSpeedMps || 0;
-            speedVal.textContent = Math.round(lastSpeedMps * (useMph ? 2.237 : 3.6));
-
-            const apMap = { 1: 'Full Self-Driving', 2: 'Autosteer', 3: 'TACC' };
-            const apText = apMap[sei.autopilotState];
-            autopilot.textContent = apText ? `${apText} Active` : '';
-            autopilot.classList.toggle('active', !!apText);
-
-            steeringSvg.style.transform = `rotate(${sei.steeringWheelAngle || 0}deg)`;
-
-            brakeEl.classList.toggle('applied', !!sei.brakeApplied);
-
-            const accelPct = Math.max(0, Math.min(1, (sei.acceleratorPedalPosition || 0) / 100));
-            const y = 21 - accelPct * 18;
-            accelFill.setAttribute('y', y);
-            accelFill.setAttribute('height', 21 - y);
-
-            blinkerLeft = !!sei.blinkerOnLeft;
-            blinkerRight = !!sei.blinkerOnRight;
-            blinkerL.classList.toggle('active', blinkerLeft);
-            blinkerR.classList.toggle('active', blinkerRight);
-            if (blinkerLeft || blinkerRight) {
-                blinkerL.classList.toggle('dim', blinkerLeft && blinkerState);
-                blinkerR.classList.toggle('dim', blinkerRight && blinkerState);
-                if (!blinkerTimer) blinkerTimer = setInterval(() => {
-                    blinkerState = !blinkerState;
-                    blinkerL.classList.toggle('dim', blinkerLeft && blinkerState);
-                    blinkerR.classList.toggle('dim', blinkerRight && blinkerState);
-                }, 400);
-            } else {
-                blinkerL.classList.remove('dim');
-                blinkerR.classList.remove('dim');
-                if (blinkerTimer) { clearInterval(blinkerTimer); blinkerTimer = null; }
-            }
-        }
-
-        async function exportCsv() {
-            if (!frames || !seiFieldsCsv) return;
-            const messages = frames.map(f => f.sei).filter(Boolean);
-            if (!messages.length) { alert('No SEI metadata to export.'); return; }
-            const filename = (currentFileName || 'dashcam').replace(/\.mp4$/i, '') + '_sei.csv';
-            DashcamHelpers.downloadBlob(new Blob([DashcamHelpers.buildCsv(messages, seiFieldsCsv)], { type: 'text/csv' }), filename);
-        }
-
-        function showError(msg) {
-            ctx.fillStyle = '#000';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            ctx.fillStyle = '#888';
-            ctx.font = 'bold 32px system-ui';
-            ctx.textAlign = 'center';
-            ctx.fillText(msg, canvas.width / 2, canvas.height / 2);
-        }
-    </script>
+    <script src="viewer-clips.js"></script>
+    <script src="viewer-ui.js"></script>
+    <script src="viewer-player.js"></script>
+    <script src="viewer-app.js"></script>
 </body>
 
 </html>

@@ -1,0 +1,60 @@
+.viewer-sidebar {
+    width: 220px;
+    min-width: 0;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+    overflow-y: auto;
+    padding: .65rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-panel);
+}
+.viewer-sidebar h2 { margin: .35rem 0 0; font-size: .78rem; letter-spacing: .06em; color: var(--text-muted); }
+.viewer-sidebar button {
+    padding: .4rem .5rem;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    text-align: left;
+    cursor: pointer;
+}
+.viewer-sidebar button:hover:not(:disabled), .viewer-sidebar button[aria-pressed="true"], .viewer-clip.active { border-color: var(--accent); }
+.viewer-sidebar button:focus-visible, .camera-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.viewer-sidebar button:disabled { opacity: .45; cursor: default; }
+.viewer-actions, .viewer-camera-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .3rem; }
+.viewer-actions button:last-child { grid-column: 1 / -1; }
+.viewer-clip-list { display: flex; flex-direction: column; gap: .3rem; min-height: 2rem; overflow-y: auto; }
+.viewer-clip { display: flex; align-items: center; gap: .45rem; width: 100%; }
+.viewer-clip img { width: 54px; aspect-ratio: 16 / 9; object-fit: cover; }
+.viewer-clip strong, .viewer-clip small { display: block; overflow-wrap: anywhere; }
+.viewer-clip small { color: var(--text-muted); margin-top: .2rem; }
+.viewer-clip-controls { display: grid; grid-template-columns: 1fr 1fr; gap: .3rem; }
+.viewer-clip-controls label { grid-column: 1 / -1; font-size: .8rem; }
+.viewer-status { margin: 0; font-size: .8rem; overflow-wrap: anywhere; color: var(--text-muted); }
+.camera-grid { display: none; width: 100%; height: 100%; min-height: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 2px; }
+.video-wrap.multi-view > #canvas { display: none; }
+.video-wrap.multi-view .camera-grid { display: grid; }
+.camera-grid.single-camera { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.camera-cell { position: relative; min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #101010; }
+.camera-cell[hidden] { display: none; }
+.video-wrap .camera-cell canvas { width: 100%; height: 100%; object-fit: contain; }
+.camera-name, .camera-status { position: absolute; color: white; background: rgba(0, 0, 0, .7); padding: .2rem .35rem; font-size: .75rem; pointer-events: none; }
+.camera-name { left: .25rem; top: .25rem; }
+.camera-status { top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; }
+.camera-status[hidden] { display: none; }
+.camera-select { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+@media (max-width: 950px) { .viewer-sidebar { width: 180px; } }
+@media (max-height: 600px), (max-width: 600px) {
+    .viewer-sidebar { width: auto; max-height: 180px; flex-shrink: 0; }
+    .viewer-camera-list { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .camera-grid { min-height: 200px; }
+}
+@media (max-width: 420px) { .camera-grid:not(.single-camera) { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(0, 1fr)); } }
+/* Keep the existing drop target and telemetry above the camera surfaces. */
+.video-wrap > .drop-overlay { z-index: 3; }
+.video-wrap > .stats-overlay { z-index: 2; }
+.camera-cell.has-status canvas { visibility: hidden; }
+.camera-select:focus-visible { opacity: 1; color: transparent; background: transparent; outline-offset: -3px; }
