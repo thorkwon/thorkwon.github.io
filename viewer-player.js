@@ -54,7 +54,8 @@ class ViewerPlayer {
                 if (!ctx) throw new Error('Canvas context not available');
                 return { cam, file, mp4, frames, times, duration, config, canvas, ctx,
                     decoder: null, decoderGeneration: 0, next: 0, target: -1, displayed: -1,
-                    firstKeyframe, queue: new Map(), flushing: false, failed: false, status: '불러오는 중' };
+                    firstKeyframe, queue: new Map(), busy: false, pendingIndex: null,
+                    flushing: false, needsKey: false, flushGeneration: 0, failed: false, status: '불러오는 중' };
             } catch (err) {
                 if (generation === this.generation) this.onCameraStatus(cam, `오류: ${err.message}`);
                 return null;
@@ -89,7 +90,10 @@ class ViewerPlayer {
     }
 
     _closeDecoder(track) {
+        track.busy = false;
+        track.pendingIndex = null;
         track.decoderGeneration++;
+        track.flushGeneration++;
         if (track.decoder) {
             try { track.decoder.close(); } catch (_) { /* already closed */ }
             track.decoder = null;
@@ -100,10 +104,23 @@ class ViewerPlayer {
     }
 
     _reset(track, index) {
-        this._closeDecoder(track);
+        const displayed = this.playing && index >= track.displayed ? track.displayed : -1;
+        track.needsKey = false;
         let key = index;
         while (key >= 0 && !track.frames[key].keyframe) key--;
         if (key < 0) throw new Error('No preceding keyframe');
+        if (track.decoder && track.decoder.state !== 'closed') {
+            track.flushGeneration++;
+            track.decoder.reset();
+            for (const frame of track.queue.values()) frame.close();
+            track.queue.clear();
+            track.flushing = false;
+            track.decoder.configure({ codec: track.config.codec, width: track.config.width, height: track.config.height });
+            track.next = key;
+            track.displayed = displayed;
+            return;
+        }
+        this._closeDecoder(track);
         const generation = track.decoderGeneration;
         const decoder = new VideoDecoder({
             output: frame => {
@@ -126,7 +143,7 @@ class ViewerPlayer {
         };
         decoder.configure({ codec: track.config.codec, width: track.config.width, height: track.config.height });
         track.next = key;
-        track.displayed = -1;
+        track.displayed = displayed;
     }
 
     _fail(track, err) {
@@ -153,7 +170,7 @@ class ViewerPlayer {
         for (const index of track.queue.keys()) if (index <= track.target && index > best) best = index;
         for (const [index, frame] of track.queue) {
             if (index <= track.target) {
-                if (index === best && index >= track.displayed) {
+                if (index === best && index >= track.displayed && (this.playing || index === track.target)) {
                     try { track.ctx.drawImage(frame, 0, 0); track.displayed = index; }
                     catch (err) { frame.close(); track.queue.delete(index); this._fail(track, err); return; }
                 }
@@ -161,10 +178,39 @@ class ViewerPlayer {
                 track.queue.delete(index);
             }
         }
+        this._advanceTrack(track);
+    }
+
+    _advanceTrack(track) {
+        if (!track.flushing && track.busy && track.displayed === track.target) {
+            track.busy = false;
+            const generation = track.decoderGeneration;
+            // Let the current output callback finish before starting another decode sequence.
+            Promise.resolve().then(() => {
+                if (generation !== track.decoderGeneration || track.failed || track.busy) return;
+                const index = track.pendingIndex;
+                track.pendingIndex = null;
+                if (index !== null) this._seekTrack(track, index);
+            });
+        }
+    }
+
+    _seekTrack(track, index) {
+        try {
+            if (!track.decoder || (track.needsKey && index !== track.displayed && !track.queue.has(index)) || (index < track.target && index !== track.displayed && !track.queue.has(index)) || index > track.next + 60) {
+                this._reset(track, index);
+            }
+            track.target = index;
+            track.busy = true;
+            track.waitStarted = performance.now();
+            this._status(track, this.time >= track.duration ? '종료' : '');
+            this._present(track);
+            this._pump(track);
+        } catch (err) { this._fail(track, err); }
     }
 
     _pump(track) {
-        if (!track.decoder || track.failed || track.flushing) return;
+        if (!track.decoder || track.failed || track.flushing || track.needsKey) return;
         try {
             // A small lookahead accommodates decoder reordering while bounding output frames.
             const limit = Math.min(track.frames.length, track.target + 9);
@@ -178,11 +224,19 @@ class ViewerPlayer {
                 track.decoder.decode(new EncodedVideoChunk({ type: frame.keyframe ? 'key' : 'delta',
                     timestamp: Math.round(track.times[i] * 1000), data }));
             }
-            if (track.next === track.frames.length && !track.flushing) {
+            // A retained target must not block the latest request indefinitely.
+            if (track.next >= limit && (!this.playing || track.next === track.frames.length ||
+                (track.busy && track.displayed !== track.target && performance.now() - track.waitStarted >= 250)) && !track.flushing) {
                 track.flushing = true;
                 const generation = track.decoderGeneration;
-                track.decoder.flush().catch(err => {
-                    if (generation === track.decoderGeneration) this._fail(track, err);
+                const flushGeneration = track.flushGeneration;
+                track.decoder.flush().then(() => {
+                    if (generation !== track.decoderGeneration || flushGeneration !== track.flushGeneration) return;
+                    track.needsKey = true;
+                    track.flushing = false;
+                    this._advanceTrack(track);
+                }).catch(err => {
+                    if (generation === track.decoderGeneration && flushGeneration === track.flushGeneration) this._fail(track, err);
                 });
             }
         } catch (err) { this._fail(track, err); }
@@ -194,10 +248,8 @@ class ViewerPlayer {
         if (this.playing) { this.anchorTime = this.time; this.anchorClock = performance.now(); }
         for (const track of this.tracks.values()) {
             if (track.failed) continue;
-            if (this.time >= track.duration) {
-                this._status(track, '종료');
-                continue;
-            }
+            // Ended tracks still seek to their last frame, including pending seeks.
+            if (this.time >= track.duration) this._status(track, '종료');
             const index = this._index(track, this.time);
             if (index < track.firstKeyframe) {
                 this._closeDecoder(track);
@@ -207,15 +259,14 @@ class ViewerPlayer {
                 this._status(track, '녹화 없음');
                 continue;
             }
-            try {
-                if (!track.decoder || (index < track.target && index !== track.displayed && !track.queue.has(index)) || index > track.next + 60) {
-                    this._reset(track, index);
-                }
-                track.target = index;
-                this._status(track, '');
-                this._present(track);
+            if (track.busy) {
+                track.pendingIndex = index;
                 this._pump(track);
-            } catch (err) { this._fail(track, err); }
+            }
+            else {
+                track.pendingIndex = null;
+                this._seekTrack(track, index);
+            }
         }
         this._emitUpdate();
     }

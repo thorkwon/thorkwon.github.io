@@ -21,6 +21,60 @@ const server = http.createServer((request, response) => {
         response.end(data);
     });
 });
+async function verifyLiveScrubbing(page) {
+    const result = await page.evaluate(async () => {
+        testPlayer.pause();
+        const slider = document.querySelector('#slider');
+        let changes = 0, previous = testPlayer.reference.displayed;
+        for (let i = 0; i < 24; i++) {
+            const value = 4000 + (i % 12) * 400;
+            slider.value = String(value);
+            slider.dispatchEvent(new Event('input'));
+            if (!document.querySelector('#frameNum').textContent.startsWith((value / 1000).toFixed(2))) throw new Error('Metadata did not update during input');
+            await new Promise(resolve => setTimeout(resolve, 30));
+            if (testPlayer.reference.displayed !== previous) changes++;
+            previous = testPlayer.reference.displayed;
+        }
+        return { changes, time: Number(slider.value) };
+    });
+    assert.ok(result.changes > 1, 'Video must update repeatedly before the input gesture ends');
+    await page.waitForFunction(time => testPlayer.time === time && [...testPlayer.tracks.values()].every(track => !track.failed && !track.busy && track.pendingIndex === null && track.displayed === track.target), { timeout: 30000 }, result.time);
+    console.log(`PASS: live scrubbing (${result.changes} updates during continuous input)`);
+}
+async function verifyNativeSlider(page) {
+    await page.$eval('#slider', element => element.scrollIntoView({ block: 'center' }));
+    const box = await (await page.$('#slider')).boundingBox();
+    await page.mouse.move(box.x + box.width * 0.2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width * 0.8, box.y + box.height / 2, { steps: 20 });
+    await page.mouse.up();
+    const value = await page.$eval('#slider', element => Number(element.value));
+    assert.ok(value > 0);
+    await page.waitForFunction(value => testPlayer.time === value && [...testPlayer.tracks.values()].every(track => !track.failed && !track.busy && track.pendingIndex === null && track.displayed === track.target), { timeout: 30000 }, value);
+    console.log('PASS: native slider drag');
+}
+async function verifyResumeOrder(page) {
+    await page.evaluate(() => { testPlayer.pause(); testPlayer.seek(23400); });
+    await page.waitForFunction(() => [...testPlayer.tracks.values()].every(t => !t.busy && !t.flushing && t.pendingIndex === null && t.displayed === t.target), { timeout: 30000 });
+    await page.evaluate(() => {
+        globalThis.resumeDraws = [];
+        for (const track of testPlayer.tracks.values()) {
+            const draw = track.ctx.drawImage.bind(track.ctx);
+            const floor = Math.round(track.times[track.displayed] * 1000);
+            const record = { floor, times: [] };
+            resumeDraws.push(record);
+            track.ctx.drawImage = (frame, ...args) => { record.times.push(frame.timestamp); return draw(frame, ...args); };
+        }
+        testPlayer.play();
+    });
+    await page.waitForFunction(() => testPlayer.time > 24400);
+    await page.evaluate(() => testPlayer.pause());
+    for (const record of await page.evaluate(() => resumeDraws)) {
+        assert.ok(record.times.length > 0);
+        assert.ok(record.times.every((time, i) => time >= (i ? record.times[i - 1] : record.floor)), 'Resumed playback must never draw backwards');
+    }
+    console.log('PASS: monotonic frames after scrub and resume');
+}
 (async () => {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -68,10 +122,19 @@ const server = http.createServer((request, response) => {
         assert.equal(await page.evaluate(() => [...testPlayer.tracks.values()].every(track => !track.failed && track.queue.size <= 16)), true);
         await page.evaluate(() => {
             const slider = document.querySelector('#slider');
+            globalThis.seekCalls = 0;
+            const seek = testPlayer.seek.bind(testPlayer);
+            testPlayer.seek = (...args) => { seekCalls++; return seek(...args); };
             for (const value of [5000, 20000, 1000, 30000]) { slider.value = value; slider.dispatchEvent(new Event('input')); }
         });
         await page.waitForFunction(() => [...testPlayer.tracks.values()].every(track => track.displayed === track.target && track.target >= 0), { timeout: 30000 });
+        await page.waitForFunction(() => testPlayer.time === 30000, { timeout: 30000 });
+        await page.waitForFunction(() => [...testPlayer.tracks.values()].every(track => track.displayed === track.target && track.target >= 0), { timeout: 30000 });
+        assert.equal(await page.evaluate(() => seekCalls), 4);
         assert.equal(await page.evaluate(() => testPlayer.time), 30000);
+        await verifyLiveScrubbing(page);
+        await verifyNativeSlider(page);
+        await verifyResumeOrder(page);
         // Move focus away from the slider so the document's frame shortcuts apply.
         await page.click('.header h1');
         const before = await page.evaluate(() => testPlayer.reference.target);
@@ -128,6 +191,9 @@ const server = http.createServer((request, response) => {
             input.files = transfer.files; input.dispatchEvent(new Event('change'));
         });
         await page.waitForFunction(() => testPlayer.reference?.file.name === 'custom-recording.mp4' && !document.querySelector('#playBtn').disabled, { timeout: 60000 });
+        await verifyLiveScrubbing(page);
+        await verifyNativeSlider(page);
+        await verifyResumeOrder(page);
         await page.evaluate(() => {
             testPlayer.pause();
             const input = document.querySelector('#fileInput'), transfer = new DataTransfer();

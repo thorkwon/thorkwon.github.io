@@ -15,7 +15,7 @@
     const speedUnit = statsOverlay.querySelector('.speed-unit');
     let seiType, seiFields = [], seiFieldsCsv = [], clips = [], inputFiles = [];
     let clipIndex = -1, cameraMode = 'all', loadGeneration = 0, inputGeneration = 0, loading = false, exporting = false;
-    let autoAdvance = true, currentTrack = null, playAfterLoad = false;
+    let autoAdvance = true, currentTrack = null, playAfterLoad = false, draggingSlider = false;
     const ui = new ViewerUI({
         onCamera: selectCamera,
         onClip: index => run(() => loadClip(index)),
@@ -135,8 +135,9 @@
     }
     function updateFrame({ time, duration, track, frame, index }) {
         currentTrack = track || null;
-        slider.max = String(Math.max(0, duration));
-        slider.value = String(time);
+        const maximum = String(Math.max(0, duration));
+        if (slider.max !== maximum) slider.max = maximum;
+        if (!draggingSlider) slider.value = String(time);
         slider.setAttribute('aria-valuetext', `${(time / 1000).toFixed(2)} / ${(duration / 1000).toFixed(2)}초`);
         fileName.textContent = track ? `${ViewerClips.labels[track.cam] || cameraMode} · ${track.file.name}` : '';
         frameNum.textContent = `${(time / 1000).toFixed(2)} / ${(duration / 1000).toFixed(2)}s · ${frame ? `Frame ${index + 1}/${track.frames.length}` : '녹화 없음'}`;
@@ -145,17 +146,23 @@
         renderSei(frame?.sei || null);
     }
     function renderSei(sei) {
-        metaList.replaceChildren();
-        for (const { propName, label, enumMap } of seiFields) {
-            const item = document.createElement('div');
-            item.className = 'item';
-            const name = document.createElement('span'), value = document.createElement('span');
-            name.className = 'label'; value.className = 'value';
-            name.textContent = label;
+        if (metaList.children.length !== seiFields.length) {
+            metaList.replaceChildren();
+            for (const { label } of seiFields) {
+                const item = document.createElement('div');
+                item.className = 'item';
+                const name = document.createElement('span'), value = document.createElement('span');
+                name.className = 'label'; value.className = 'value';
+                name.textContent = label;
+                item.append(name, value); metaList.append(item);
+            }
+        }
+        for (const [index, { propName, enumMap }] of seiFields.entries()) {
             let raw = sei?.[propName];
             if (propName === 'vehicleSpeedMps' && raw != null) raw *= 3.6;
-            value.textContent = raw != null ? DashcamHelpers.formatValue(raw, enumMap) : '—';
-            item.append(name, value); metaList.append(item);
+            const value = metaList.children[index].lastElementChild;
+            const text = String(raw != null ? DashcamHelpers.formatValue(raw, enumMap) : '—');
+            if (value.textContent !== text) value.textContent = text;
         }
         updateStats(sei);
     }
@@ -258,7 +265,13 @@
     });
     playBtn.addEventListener('click', () => { if (!loading) player.playing ? player.pause() : player.play(); });
     slider.step = '1'; slider.setAttribute('aria-label', '공통 재생 시각');
-    slider.addEventListener('input', () => { player.pause(); run(() => player.seek(Number(slider.value))); });
+    slider.addEventListener('pointerdown', () => { draggingSlider = true; });
+    window.addEventListener('pointerup', () => { draggingSlider = false; });
+    window.addEventListener('pointercancel', () => { draggingSlider = false; });
+    slider.addEventListener('input', () => {
+        player.pause();
+        run(() => player.seek(Number(slider.value)));
+    });
     exportBtn.addEventListener('click', () => run(exportCsv));
     statsOverlay.querySelector('.speed-click').onclick = () => {
         useMph = !useMph;
