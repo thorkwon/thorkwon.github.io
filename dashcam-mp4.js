@@ -249,19 +249,40 @@ window.DashcamMP4 = DashcamMP4;
 
     /** Derive field metadata from SeiMetadata type */
     function deriveFieldInfo(SeiMetadataCtor, enumMap, options = {}) {
+        const koreanLabels = {
+            version: '버전',
+            gear_state: '기어 상태',
+            frame_seq_no: '프레임 번호',
+            vehicle_speed_mps: '속도 (km/h)',
+            accelerator_pedal_position: '가속 페달',
+            steering_wheel_angle: '스티어링 각도 (°)',
+            blinker_on_left: '좌측 방향지시등',
+            blinker_on_right: '우측 방향지시등',
+            brake_applied: '브레이크',
+            autopilot_state: '오토파일럿 상태',
+            latitude_deg: '위도 (°)',
+            longitude_deg: '경도 (°)',
+            heading_deg: '방향 (°)',
+            linear_acceleration_mps2_x: 'X축 가속도 (m/s²)',
+            linear_acceleration_mps2_y: 'Y축 가속도 (m/s²)',
+            linear_acceleration_mps2_z: 'Z축 가속도 (m/s²)'
+        };
+
         return SeiMetadataCtor.fieldsArray.map(field => {
             const propName = field.name;
             const snakeName = propName.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
-            const label = propName
-                .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-                .replace(/^./, s => s.toUpperCase())
-                .replace(/Mps$/, '(m/s)')
-                .replace(/Deg$/, '(°)');
+            const label = options.useLabels
+                ? (koreanLabels[snakeName] || propName)
+                : propName
+                    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+                    .replace(/^./, s => s.toUpperCase())
+                    .replace(/Mps$/, '(m/s)')
+                    .replace(/Deg$/, '(°)');
 
             return {
                 propName,
                 protoName: options.useSnakeCase ? snakeName : propName,
-                label: options.useLabels ? label : undefined,
+                label: label,
                 enumMap: enumMap[propName] || enumMap[snakeName] || null
             };
         });
